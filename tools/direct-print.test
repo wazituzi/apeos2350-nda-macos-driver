@@ -1,0 +1,21 @@
+# Send an Apple Raster (URF) document straight to the device, bypassing CUPS.
+# Used to prove whether the printer itself digests URF.
+{
+    NAME "Direct URF print"
+    OPERATION Print-Job
+    GROUP operation-attributes-tag
+    ATTR charset attributes-charset utf-8
+    ATTR language attributes-natural-language en
+    ATTR uri printer-uri $uri
+    ATTR name requesting-user-name $user
+    ATTR mimeMediaType document-format image/urf
+    ATTR name job-name "Direct URF probe"
+    ATTR keyword media iso_a4_210x297mm
+    ATTR keyword print-color-mode monochrome
+    FILE $filename
+    STATUS successful-ok
+    DISPLAY job-id
+    DISPLAY job-uri
+    DISPLAY job-state
+    DISPLAY job-state-reasons
+}

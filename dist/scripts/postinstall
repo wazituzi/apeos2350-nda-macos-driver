@@ -1,0 +1,172 @@
+#!/bin/bash
+#
+# Post-install script for the Apeos 2350 NDA HBPL driver package.
+#
+# Runs as root from the macOS Installer sandbox.  It must never fail the
+# installation: even with an unreachable printer the driver is installed
+# correctly and the queue can be re-pointed later with set-printer-address.sh.
+#
+set -u
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+export PATH
+
+LOG=/var/log/apeos2350-install.log
+QUEUE=Apeos_2350_HBPL
+DEST=/Library/Printers/FUJIFILM/Apeos2350
+PPD="/Library/Printers/PPDs/Contents/Resources/FUJIFILM Apeos 2350 NDA HBPL.ppd"
+CONF="$DEST/printer-address.conf"
+DEFAULT_IP=192.168.1.100
+PORT=9100
+
+# Absolute paths: the installer runs with a minimal environment, and lpstat
+# lives in /usr/bin while lpadmin/cupsenable/cupsaccept live in /usr/sbin.
+LPADMIN=/usr/sbin/lpadmin
+LPSTAT=/usr/bin/lpstat
+CUPSENABLE=/usr/sbin/cupsenable
+CUPSACCEPT=/usr/sbin/cupsaccept
+
+exec >>"$LOG" 2>&1
+echo
+echo "=== $(date) postinstall ==="
+
+# ---------------------------------------------------------------------------
+# CUPS refuses to execute a filter it does not trust:
+#   "File ... has insecure permissions" / "Unable to start filter ...
+#    Invalid argument" / "Stopping job because the scheduler could not
+#    execute a filter."
+# pkgbuild bakes in root:wheel (--ownership recommended); enforce it anyway.
+# ---------------------------------------------------------------------------
+if [ -f "$DEST/rastertohbpl" ]; then
+  chown root:wheel "$DEST/rastertohbpl" && chmod 755 "$DEST/rastertohbpl"
+  echo "filter: $(ls -l "$DEST/rastertohbpl")"
+fi
+if [ -f "$PPD" ]; then
+  chown root:wheel "$PPD" && chmod 644 "$PPD"
+fi
+
+# ---------------------------------------------------------------------------
+# Find the printer.  It advertises _pdl-datastream._tcp over Bonjour; it does
+# NOT advertise _ipp._tcp (its IPP endpoint is a stub - see README).
+#
+# The address is returned through DISC_IP and never through stdout: this
+# function is deliberately NOT run inside a command substitution, because any
+# stray output would otherwise be captured into the device URI.
+# ---------------------------------------------------------------------------
+DISC_IP=""
+discover_printer() {
+  DISC_IP=""
+  local tmp p inst host ip
+  tmp="$(mktemp -d)" || return 1
+
+  dns-sd -B _pdl-datastream._tcp local. > "$tmp/browse" 2>&1 &
+  p=$!; sleep 5; kill "$p" 2>/dev/null; wait "$p" 2>/dev/null
+
+  inst="$(awk '/Apeos|FUJIFILM/ && /_pdl-datastream/ {
+                 sub(/^.*_pdl-datastream\._tcp\.[ \t]*/, ""); print; exit
+               }' "$tmp/browse")"
+  if [ -z "$inst" ]; then
+    echo "discovery: no Apeos/FUJIFILM _pdl-datastream service seen"
+    rm -rf "$tmp"; return 1
+  fi
+  echo "discovery: instance=$inst"
+
+  dns-sd -L "$inst" _pdl-datastream._tcp local. > "$tmp/lookup" 2>&1 &
+  p=$!; sleep 4; kill "$p" 2>/dev/null; wait "$p" 2>/dev/null
+
+  host="$(grep -o 'can be reached at [^ ]*' "$tmp/lookup" | awk '{print $NF}' \
+          | sed 's/:[0-9]*$//' | head -1)"
+  if [ -z "$host" ]; then
+    echo "discovery: could not resolve the service instance"
+    rm -rf "$tmp"; return 1
+  fi
+  echo "discovery: host=$host"
+
+  ip="$(dscacheutil -q host -a name "$host" 2>/dev/null \
+        | awk '/^ip_address:/ {print $2; exit}')"
+  if [ -z "$ip" ]; then
+    ping -c 1 -W 2000 "$host" > "$tmp/ping" 2>&1
+    ip="$(sed -n 's/.*(\([0-9][0-9.]*\)).*/\1/p' "$tmp/ping" | head -1)"
+  fi
+  rm -rf "$tmp"
+
+  if [ -z "$ip" ]; then
+    echo "discovery: no IPv4 address for $host"
+    return 1
+  fi
+  echo "discovery: ip=$ip"
+  DISC_IP="$ip"
+  return 0
+}
+
+IP=""
+if [ -s "$CONF" ]; then
+  IP="$(head -1 "$CONF" | tr -d '[:space:]')"
+  echo "address pinned by $CONF: $IP"
+fi
+if [ -z "$IP" ]; then
+  discover_printer && IP="$DISC_IP"
+fi
+if [ -z "$IP" ]; then
+  IP="$DEFAULT_IP"
+  echo "discovery found nothing, falling back to $IP"
+fi
+
+if nc -z -G 3 "$IP" "$PORT" 2>/dev/null; then
+  echo "$IP:$PORT is reachable"
+else
+  echo "WARNING: $IP:$PORT did not answer (printer asleep or moved?)"
+fi
+
+# ---------------------------------------------------------------------------
+# Create / refresh the queue.  If the discovered address does not work out,
+# fall back to the known default rather than leaving the user with nothing.
+# ---------------------------------------------------------------------------
+create_queue() {
+  "$LPADMIN" -p "$QUEUE" -E \
+    -v "socket://$1:$PORT" \
+    -P "$PPD" \
+    -D "FUJIFILM Apeos 2350 NDA (HBPL)" \
+    -o printer-is-shared=false
+}
+
+create_queue "$IP"
+rc=$?
+if [ $rc -ne 0 ] && [ "$IP" != "$DEFAULT_IP" ]; then
+  echo "lpadmin failed for $IP (rc=$rc); retrying with $DEFAULT_IP"
+  IP="$DEFAULT_IP"
+  create_queue "$IP"
+  rc=$?
+fi
+
+"$CUPSENABLE" "$QUEUE" 2>/dev/null
+"$CUPSACCEPT" "$QUEUE" 2>/dev/null
+
+echo "lpadmin rc=$rc; queue $QUEUE -> socket://$IP:$PORT"
+"$LPSTAT" -p "$QUEUE" -l 2>&1 | head -8
+
+# Queues left behind by earlier experiments with this printer.
+for q in Apeos_2350_NDA Apeos_2350_IPP; do
+  if "$LPSTAT" -p "$q" >/dev/null 2>&1; then
+    echo "removing obsolete queue $q"
+    "$LPADMIN" -x "$q" 2>/dev/null
+  fi
+done
+
+# ---------------------------------------------------------------------------
+# Housekeeping: the build host stamps com.apple.provenance on every file, which
+# makes the payload carry AppleDouble "._*" sidecars.  Remove the ones that
+# belong to this package; only names this package installs are touched.
+# ---------------------------------------------------------------------------
+for f in ._rastertohbpl ._README.txt ._COPYING.txt ._set-printer-address.sh \
+         ._Apeos2350; do
+  rm -f "$DEST/$f"
+done
+rm -f "/Library/Printers/PPDs/Contents/Resources/._FUJIFILM Apeos 2350 NDA HBPL.ppd"
+rm -f "/Library/Printers/FUJIFILM/._Apeos2350"
+rm -f "/Library/Printers/PPDs/._Contents" "/Library/Printers/PPDs/Contents/._Resources"
+rm -f "/Library/Printers/._PPDs" "/Library/._Printers"
+
+echo "installed:"
+ls -l "$DEST" 2>&1 | sed 's/^/  /'
+
+exit 0

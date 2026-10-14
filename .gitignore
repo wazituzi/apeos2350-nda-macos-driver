@@ -1,0 +1,16 @@
+# Build products
+/build/
+/bin/
+
+# Package staging and output (see dist/build-pkg.sh)
+/dist/out/
+/dist/pkgroot/
+/dist/dmg-stage/
+
+# macOS
+.DS_Store
+._*
+
+# Editors
+*.swp
+*~

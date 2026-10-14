@@ -1,0 +1,22 @@
+# Show what the printer itself thinks of our jobs.
+{
+    NAME "Get jobs from device"
+    OPERATION Get-Jobs
+    GROUP operation-attributes-tag
+    ATTR charset attributes-charset utf-8
+    ATTR language attributes-natural-language en
+    ATTR uri printer-uri $uri
+    ATTR name requesting-user-name probe
+    ATTR keyword which-jobs all
+    ATTR boolean my-jobs false
+    ATTR integer limit 10
+    STATUS successful-ok
+    DISPLAY job-id
+    DISPLAY job-name
+    DISPLAY job-originating-user-name
+    DISPLAY job-state
+    DISPLAY job-state-reasons
+    DISPLAY job-impressions-completed
+    DISPLAY document-format
+    DISPLAY time-at-completed
+}

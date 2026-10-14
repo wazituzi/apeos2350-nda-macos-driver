@@ -1,0 +1,30 @@
+　　　　富士胶片 Apeos 2350 NDA — macOS 打印驱动测试页
+    FUJIFILM Apeos 2350 NDA - macOS driver test page
+
+如果你能看到这一页，说明驱动工作正常。
+If you are reading this on paper, the driver works.
+
+------------------------------------------------------------
+ 打印机 / Printer : FUJIFILM Apeos 2350 NDA
+ 地址 / Address   : 192.168.1.100  (RAW 9100)
+ 数据格式 / Format: HBPL (Host Based Print Language), 600 dpi
+ 渲染链 / Chain   : PDF -> cgpdftoraster (macOS 自带) -> CUPS raster
+                    -> rastertohbpl (本驱动) -> HBPL -> 9100
+------------------------------------------------------------
+
+这台机器没有 PostScript / PCL 解释器，官方只有 Windows 驱动；
+本页由 macOS 原生滤镜链 + 自研 HBPL 编码滤镜生成。
+
+细线与小字测试 / Fine line and small text test:
+  1 pt line:  ________________________________________________
+  6 pt text:  The quick brown fox jumps over the lazy dog. 0123456789
+  8 pt 中文:  敏捷的棕色狐狸跃过那只懒狗。0123456789
+  10 pt 中文: 本页由 macOS 自带的 PDF→光栅滤镜加 HBPL 编码器生成。
+
+灰阶测试 / Grayscale ramp:
+  ░░░▒▒▒▓▓▓████████▓▓▓▒▒▒░░░
+
+如果这一页出现乱码、缺字或整页空白，请把现象告诉安装人员。
+If this page is garbled, blank, or has missing glyphs, report it.
+
+-- 打印队列 / queue: Apeos_2350_HBPL --

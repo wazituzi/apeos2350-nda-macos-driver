@@ -1,0 +1,17 @@
+# Send a document straight to the device with an explicit document-format.
+# Used to test whether the IPP path only accepts application/octet-stream
+# (the single format the device advertises) rather than image/urf.
+{
+    NAME "Direct print with explicit format"
+    OPERATION Print-Job
+    GROUP operation-attributes-tag
+    ATTR charset attributes-charset utf-8
+    ATTR language attributes-natural-language en
+    ATTR uri printer-uri $uri
+    ATTR name requesting-user-name $user
+    ATTR mimeMediaType document-format $format
+    ATTR name job-name $jobname
+    ATTR keyword media iso_a4_210x297mm
+    FILE $filename
+    STATUS successful-ok
+}

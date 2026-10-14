@@ -1,0 +1,41 @@
+# Query only the capabilities that decide whether we need a custom driver.
+{
+    NAME "Apeos capability probe"
+    OPERATION Get-Printer-Attributes
+    GROUP operation-attributes-tag
+    ATTR charset attributes-charset utf-8
+    ATTR language attributes-natural-language en
+    ATTR uri printer-uri $uri
+    ATTR keyword requested-attributes printer-name,printer-info,printer-make-and-model,printer-device-id,printer-firmware-version,printer-uuid,printer-state,printer-state-reasons,printer-is-accepting-jobs,printer-more-info,document-format-default,document-format-supported,ipp-versions-supported,ipp-features-supported,operations-supported,charset-supported,compression-supported,color-supported,print-color-mode-supported,sides-supported,printer-resolution-supported,media-default,media-source-supported,output-bin-supported,urf-supported,pwg-raster-document-resolution-supported,pwg-raster-document-type-supported,pwg-raster-document-sheet-back,job-creation-attributes-supported,marker-levels,printer-alert
+    STATUS successful-ok
+    DISPLAY printer-name
+    DISPLAY printer-info
+    DISPLAY printer-make-and-model
+    DISPLAY printer-device-id
+    DISPLAY printer-firmware-version
+    DISPLAY printer-uuid
+    DISPLAY printer-state
+    DISPLAY printer-state-reasons
+    DISPLAY printer-is-accepting-jobs
+    DISPLAY document-format-default
+    DISPLAY document-format-supported
+    DISPLAY ipp-versions-supported
+    DISPLAY ipp-features-supported
+    DISPLAY operations-supported
+    DISPLAY compression-supported
+    DISPLAY charset-supported
+    DISPLAY color-supported
+    DISPLAY print-color-mode-supported
+    DISPLAY sides-supported
+    DISPLAY printer-resolution-supported
+    DISPLAY media-default
+    DISPLAY media-source-supported
+    DISPLAY output-bin-supported
+    DISPLAY urf-supported
+    DISPLAY pwg-raster-document-resolution-supported
+    DISPLAY pwg-raster-document-type-supported
+    DISPLAY pwg-raster-document-sheet-back
+    DISPLAY printer-more-info
+    DISPLAY printer-alert
+    DISPLAY marker-levels
+}

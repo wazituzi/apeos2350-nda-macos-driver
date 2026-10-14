@@ -1,0 +1,14 @@
+# Validate-Job capability probe: asks the printer whether it would ACCEPT a job
+# in the given format. Validate-Job never prints anything.
+{
+    NAME "Validate document format"
+    OPERATION Validate-Job
+    GROUP operation-attributes-tag
+    ATTR charset attributes-charset utf-8
+    ATTR language attributes-natural-language en
+    ATTR uri printer-uri $uri
+    ATTR name requesting-user-name probe
+    ATTR mimeMediaType document-format $format
+    ATTR name job-name "capability probe - not a real job"
+    STATUS successful-ok
+}
