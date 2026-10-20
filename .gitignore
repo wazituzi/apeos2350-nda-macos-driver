@@ -11,6 +11,10 @@
 .DS_Store
 ._*
 
+# Python bytecode (tools/*.py)
+__pycache__/
+*.pyc
+
 # Editors
 *.swp
 *~

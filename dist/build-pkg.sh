@@ -14,7 +14,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
 
-VERSION="${VERSION:-1.0}"
+VERSION="${VERSION:-1.8}"
 IDENT="com.apeos2350nda.hbpl"
 BASENAME="Apeos2350NDA-HBPL-$VERSION"
 OUT="$HERE/out"

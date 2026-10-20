@@ -71,12 +71,12 @@ HBPL 没有公开规范，但开源项目 **foo2zjs** 里有逆向出来的实�
    │  PDF
    ▼
 cgpdftoraster          ← macOS 系统自带滤镜
-   │  CUPS raster (application/vnd.cups-raster, 600dpi, 1bpp 已加网)
+   │  CUPS raster (application/vnd.cups-raster, 600dpi, 8bpp 连续调灰度)
    ▼
 rastertohbpl           ← 本工程的滤镜（单个自包含二进制）
    │   1. 解析 CUPS raster
-   │   2. 位打包（加网由系统的 cgpdftoraster 完成，见下）
-   │   3. 编码为 HBPL v2（JBIG 压缩）
+   │   2. Floyd–Steinberg 误差扩散加网（在本滤镜内完成，见下）
+   │   3. 位打包 + 编码为 HBPL v2（JBIG 压缩）
    ▼
 HBPL 数据流（PJL 头 + JP/PS/PE 记录）
    │
@@ -95,16 +95,39 @@ socket://192.168.1.100:9100   ← CUPS socket 后端
 - 本滤镜把 HBPL 编码器（`foo2hbpl2.c`）直接编进同一个二进制，
   运行期**不 fork/exec 任何子进程**，彻底避开沙箱的 exec 限制。
 
-### 加网放在哪一层（两种方案都实测过）
+### 加网放在哪一层：为什么改成滤镜内误差扩散
 
-HBPL 只吃 1-bit 位图，所以"灰度 → 黑白点阵"的加网必须在主机侧完成。两条路都跑过：
+HBPL 只吃 1-bit 位图，所以"灰度 → 黑白点阵"的加网必须在主机侧完成。
+最早的两套方案都试过：滤镜自己用 8×8 Bayer 有序抖动（规则网点、观感差），
+以及让 `cgpdftoraster` 直接输出 1-bit（Apple 的加网）。当时选了后者，但用真实
+照片和扫描件打印后暴露了一个明显缺陷：
 
-| 方案 | 结果 |
-|---|---|
-| 滤镜自己抖动（8×8 Bayer 有序抖动） | 能用，但灰阶呈明显的规则网点，观感差 |
-| **让 `cgpdftoraster` 直接输出 1-bit**<br>（PPD 里 `cupsColorSpace 3` + `cupsBitsPerColor 1`） | **采用**。用的是 Apple 为 AirPrint 调好的加网，渐变细腻、文字锐利 |
+> **`cgpdftoraster` 的 1-bit 加网是一个 64×64 像素固定阈值模板的平铺。**
+> 600 dpi 下 64 px = **2.71 mm**，于是照片、扫描件的平滑区域会显现
+> 2.7 mm 周期的"小正方形色块"，色调在 1 mm 尺度上也起伏不均
+> （第 19 页实测：1 mm 块色调误差 RMS 2.25/255、最大 14/255；
+> 加网图案在 64 px 间隔上的自相关 0.99）。
+> 全局墨量其实很准——问题出在"局部色调 + 可见周期性"上。
 
-因此 PPD 里 ColorModel 是 1-bit K，滤镜只做位打包，不做任何图像处理。
+现在的做法：PPD 让 `cgpdftoraster` 输出 **8-bit 连续调灰度**
+（`cupsColorSpace 3` + `cupsBitsPerColor 8`），由本滤镜做**蛇形
+Floyd–Steinberg 误差扩散**，再打包成 1-bit 交给 HBPL 编码器。
+误差扩散没有固定周期，局部色调被保留，照片上不再出现方块/网纹：
+
+| 指标（第 19 页，600 dpi，与 8-bit 参考比） | 旧：cgpdftoraster 1-bit | 新：8-bit + FS |
+|---|---|---|
+| 1 mm 块色调误差 RMS（8-bit 级） | 2.25 | **0.49** |
+| 1 mm 块色调误差最大值 | 13.9 | **5.1** |
+| 64 px（2.71 mm）图案自相关 | 0.99 | **≈0（无周期）** |
+| HBPL 数据量（31 页扫描件） | 26.8 MB | **22.4 MB** |
+
+数据量反而变小，是因为误差扩散的随机噪声比规则模板更好被 JBIG 压缩。
+代价是中间 raster 由 4 MB/页变成 32 MB/页（A4 600 dpi），但只在本机滤镜管道
+里流动、不落盘，实测 31 页整本 13 s 处理完。
+
+**对文字的影响**：`cgpdftoraster` 在 8 bpc 下对矢量文字/线条输出的仍是
+0/255 二值，所以这部分逐像素不变；扫描件里的抗锯齿文字用误差扩散反而更干净
+（纸白区杂点 824 px → 37 px）。
 
 **实测分辨率极限**（600 dpi / 1-bit，真机出纸确认）：
 
@@ -117,7 +140,7 @@ HBPL 只吃 1-bit 位图，所以"灰度 → 黑白点阵"的加网必须在主�
 
 灰度值仍被忠实保留：2px 棋盘格在加网前平均黑度 41%，加网后实测 41.8%。
 
-这不是缺陷，是 1-bit 加网的物理规律——它用空间分辨率换灰阶层次，
+这不是缺陷，是 1-bit 输出的物理规律——它用空间分辨率换灰阶层次，
 图案周期小于一个加网单元（≈0.34 mm）时只能还原成等效灰度。
 
 ### 对 foo2hbpl2 的两处本地修改
@@ -202,7 +225,7 @@ sudo ./uninstall.sh
 
 ```sh
 ./dist/build-pkg.sh            # 产物在 dist/out/
-VERSION=1.1 ./dist/build-pkg.sh
+VERSION=1.8 ./dist/build-pkg.sh
 ```
 
 | 产物 | 用途 |
@@ -267,7 +290,7 @@ xcrun stapler staple Apeos2350NDA-HBPL-1.0-signed.pkg
 
 | 文件 | 说明 |
 |---|---|
-| `src/rastertohbpl.c` | 本工程的 CUPS 滤镜：CUPS raster → PBM → 调用 HBPL 编码器 |
+| `src/rastertohbpl.c` | 本工程的 CUPS 滤镜：CUPS raster（8-bit 灰度）→ 误差扩散加网 → PBM → 调用 HBPL 编码器 |
 | `src/foo2hbpl2.c`, `src/hbpl.h` | HBPL v2 编码器（Rick Richardson，GPLv2） |
 | `src/jbig*.c`, `src/jbig*.h` | JBIG-KIT（Markus Kuhn，GPLv2）—— HBPL v2 用 JBIG 压位图 |
 | `ppd/FUJIFILM-Apeos-2350-NDA-HBPL.ppd` | 驱动 PPD，`@FILTER@` 由安装脚本替换为实际路径 |
@@ -291,14 +314,23 @@ cupsfilter -p /Library/Printers/PPDs/Contents/Resources/...  # 或用队列 PPD
 lp -d Apeos_2350_HBPL -o media=A4 文件.pdf
 ```
 
-或者手工跑一遍滤镜并解码回图像：
+或者手工跑一遍滤镜，并把加网后的位图直接导出成 PBM（不用解码 HBPL）：
 
 ```sh
-cupsfilter -m application/vnd.cups-raster 文件.pdf > /tmp/x.ras
-./bin/rastertohbpl 1 "$USER" "test" 1 "" /tmp/x.ras > /tmp/x.hbpl
-# 解码 HBPL 回位图（需要 foo2zjs 的 hbpldecode）
-hbpldecode -d /tmp/dec < /tmp/x.hbpl
+# 1) 得到 8-bit 灰度 CUPS raster（用队列/PPD 渲染）
+cupsfilter -p /Library/Printers/PPDs/Contents/Resources/"FUJIFILM Apeos 2350 NDA HBPL.ppd" \
+           -m application/vnd.cups-raster 文件.pdf > /tmp/x.ras
+
+# 2) 跑滤镜；RASTERTOHBPL_PBM_DUMP 会把最终 1-bit 位图另存一份
+RASTERTOHBPL_PBM_DUMP=/tmp/x.pbm \
+  ./bin/rastertohbpl 1 "$USER" "test" 1 "" /tmp/x.ras > /tmp/x.hbpl
+
+# /tmp/x.pbm 是标准 PBM P4，可直接用看图软件打开；
+# /tmp/x.hbpl 就是原样发给打印机的 HBPL 数据流
 ```
+
+`RASTERTOHBPL_PBM_DUMP` 只在手动排查时用；CUPS 正常调度时不会设置它。
+如果 raster 本身就是 1-bit（例如改用别的 PPD），滤镜会原样透传、不再加网。
 
 **判断"是驱动坏了还是加网正常"**：打 `tools/diagnostic.pdf`，第 4 节是间距递减的
 棋盘格扫描；2px/4px 是灰块、8px 起能分辨，就是在正常工作。
@@ -323,6 +355,15 @@ ipptool -t -T 8 ipp://<打印机IP>:631/ipp/print tools/apeos-capabilities.test 
 
 - **细节极限约 0.34 mm**：比这更细的图案（0.1 mm 级棋盘格等）会被还原成等效灰度
   而不是图案本身，原因见 §2 的实测数据。
+- **8-bit 中间 raster 变大**：A4 600dpi 一页约 32 MB（1-bit 时约 4 MB），
+  只在 `cgpdftoraster → rastertohbpl` 的管道里流动、不落盘；
+  发给打印机的 HBPL 数据流体积反而比旧的 1-bit 有序加网小约 16%。
+- **误差扩散的固有限制**：极端平坦的纯矢量平色块在 600 dpi 下可能出现
+  4 px 级的轻微纹理（正常照片/扫描件不会）；如果以后遇到，可在加网前加
+  ±1 LSB 抖动或做阈值吸附（`src/rastertohbpl.c` 的 `dither_row_fs()`）。
+- **照片/扫描件里的方块不再由加网产生**：如果换成误差扩散后仍看到 1 mm 级
+  方形色块，那是源文件自身的 JPEG 8×8 块（200 dpi 扫描件约 1.02 mm），
+  驱动层无法消除。
 - **实测覆盖**：A4 单面 600dpi（含 3 页文档，**页序正确、第 1 页在最上**）、
   A4 长边双面（DuplexNoTumble）、A4 短边双面（DuplexTumble）、
   **奇数页双面收尾**（3 页文档双面，最后一张单面）、
@@ -340,7 +381,30 @@ ipptool -t -T 8 ipp://<打印机IP>:631/ipp/print tools/apeos-capabilities.test 
 
 ---
 
-## 8. 许可
+## 8. 变更记录
+
+### 1.8 (2026-10) — 修复照片打印出现"小正方形色块 / 颜色不均匀"
+
+- **问题**：照片页、扫描件（尤其是浅色、平滑渐变的区域）打印后可见约
+  2.7 mm 周期的方形色块，色调也不均匀。
+- **原因**：驱动原先让 `cgpdftoraster` 输出 1-bit；它的 1-bit 加网是一个
+  64×64 px 固定阈值模板的平铺（600 dpi 下 64 px = 2.71 mm）。模板的周期性
+  在纸上表现为"小正方形色块"，同时 1 mm 尺度的局部色调误差可达 14/255。
+- **修复**：PPD 改为输出 8-bit 连续调灰度（`cupsBitsPerColor 8`），
+  由 `rastertohbpl` 做蛇形 Floyd–Steinberg 误差扩散后再打包成 1-bit。
+  1 mm 块色调误差 RMS 2.25 → 0.49，64 px 周期结构消失；矢量文字/线条
+  逐像素不变；发给打印机的 HBPL 数据量还小了约 16%。
+- **真机验证**：安装后打印同一份 31 页扫描件（含瓷砖照片页），
+  2.7 mm 方块消失，照片与扫描背景色调均匀（2026-10-20，Apeos 2350 NDA）。
+- **升级**：重新运行 `sudo ./install.sh`（PPD 和滤镜都需要更新；
+  只换其一会出现 8-bit PPD 配旧滤镜 = 旧滤镜按 8-bit 输入的路径处理，仍能打印但
+  仍是旧加网/或旧 PPD 配新滤镜 = 1-bit 透传，也是旧观感）。
+- 排查手段：`RASTERTOHBPL_PBM_DUMP=/tmp/x.pbm ./bin/rastertohbpl ...`
+  可导出最终 1-bit 位图（见 §6）。
+
+---
+
+## 9. 许可
 
 - `src/rastertohbpl.c`：本工程，**GPLv2**（因为它链接了 GPLv2 的 foo2hbpl2/JBIG-KIT）。
 - `src/foo2hbpl2.c`、`src/hbpl.h`：出自 [foo2zjs](https://github.com/OpenPrinting/foo2zjs)，

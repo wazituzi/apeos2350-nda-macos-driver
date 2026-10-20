@@ -10,13 +10,19 @@
 *% This PPD wires up a CUPS filter chain that uses only software already on
 *% the Mac plus one small filter:
 *%
-*%   PDF --> cgpdftoraster (built into macOS) --> CUPS raster
-*%       --> rastertohbpl (this driver) --> HBPL --> socket://IP:9100
+*%   PDF --> cgpdftoraster (built into macOS) --> CUPS raster (8-bit grey)
+*%       --> rastertohbpl (this driver, error-diffusion halftone)
+*%       --> HBPL --> socket://IP:9100
+*%
+*% The raster is 8-bit continuous-tone grey on purpose.  cgpdftoraster's own
+*% 1-bit halftone is a 64x64 tiled dither mask (2.7 mm repeat at 600 dpi),
+*% which prints photos as visible square tone patches; the filter dithers the
+*% 8-bit grey itself with Floyd-Steinberg error diffusion instead.
 *%
 *% Set the device URI with:  lpadmin -p <queue> -v socket://<printer-ip>:9100
 *% ===========================================================================
 *FormatVersion: "4.3"
-*FileVersion: "1.0"
+*FileVersion: "1.8"
 *LanguageVersion: English
 *LanguageEncoding: ISOLatin1
 *PSVersion: "(3010.000) 0"
@@ -41,7 +47,7 @@
 *OpenUI *ColorModel/Color Mode: PickOne
 *OrderDependency: 10 AnySetup *ColorModel
 *DefaultColorModel: Gray
-*ColorModel Gray/Grayscale: "<</cupsColorSpace 3/cupsBitsPerColor 1/cupsColorOrder 0/cupsCompression 0>>setpagedevice"
+*ColorModel Gray/Grayscale: "<</cupsColorSpace 3/cupsBitsPerColor 8/cupsColorOrder 0/cupsCompression 0>>setpagedevice"
 *CloseUI: *ColorModel
 *LandscapeOrientation: Plus90
 *DefaultResolution: 600dpi

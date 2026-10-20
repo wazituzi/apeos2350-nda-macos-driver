@@ -9,8 +9,15 @@
  * This filter closes that gap with nothing but components that already exist
  * on the Mac:
  *
- *     PDF -> cgpdftoraster (Apple, built in) -> CUPS raster
- *         -> [ this filter: raster -> pbmraw -> HBPL ] -> socket://...:9100
+ *     PDF -> cgpdftoraster (Apple, built in) -> CUPS raster (8-bit grey)
+ *         -> [ this filter: raster -> dither -> pbmraw -> HBPL ]
+ *         -> socket://...:9100
+ *
+ * The raster is requested as 8-bit continuous-tone grey and halftoned here
+ * with Floyd-Steinberg error diffusion instead of using cgpdftoraster's own
+ * 1-bit output: that output is a 64x64 tiled dither mask which, at 600 dpi,
+ * repeats every 2.7 mm and shows up as square tone patches on photos (see
+ * dither_row_fs() and README section 2).
  *
  * The raster parsing and the HBPL encoder are both in this single binary, so
  * the CUPS filter sandbox never has to launch a helper process.
@@ -77,17 +84,61 @@ static unsigned get_u32(const unsigned char *h, size_t off)
            ((unsigned)h[off + 2] << 16) | ((unsigned)h[off + 3] << 24);
 }
 
-/* 8x8 Bayer matrix, values 0..63 */
-static const int BAYER[8][8] = {
-    { 0, 32,  8, 40,  2, 34, 10, 42},
-    {48, 16, 56, 24, 50, 18, 58, 26},
-    {12, 44,  4, 36, 14, 46,  6, 38},
-    {60, 28, 52, 20, 62, 30, 54, 22},
-    { 3, 35, 11, 43,  1, 33,  9, 41},
-    {51, 19, 59, 27, 49, 17, 57, 25},
-    {15, 47,  7, 39, 13, 45,  5, 37},
-    {63, 31, 55, 23, 61, 29, 53, 21},
-};
+/*
+ * Floyd-Steinberg error-diffusion halftoning.
+ *
+ * The page is requested from cgpdftoraster as 8-bit continuous-tone grey
+ * (cupsColorSpace 3, cupsBitsPerColor 8) instead of its 1-bit output, because
+ * the system's own 1-bit halftone is a 64x64 tiled dither mask: at 600 dpi
+ * the tile repeats every 2.7 mm, which on paper shows up as a grid of square
+ * patches of slightly different grey in smooth areas (photos, scanned
+ * backgrounds) - the "small square colour blocks" users see when printing
+ * photos.  The same mask also makes local tone uneven: a 1 mm area can be off
+ * by more than 10 grey levels.
+ *
+ * Error diffusion has no repeating pattern: the residual error of every pixel
+ * is pushed on to neighbours that have not been processed yet, so local tone
+ * is preserved and no screen period exists.  Serpentine scanning avoids the
+ * directional "worm" artefacts that plain left-to-right diffusion produces in
+ * flat areas.
+ *
+ * `cur`/`next` carry the accumulated error (in units of one 8-bit level) for
+ * the current and the following row, with one element of padding on either
+ * side so the x-1/x+1 taps never fall off the row.  Errors are distributed as
+ * 7/16 to the right, 3/16 down-left, 5/16 down, 1/16 down-right, mirrored on
+ * right-to-left rows.
+ */
+static void dither_row_fs(const unsigned char *rowbuf, unsigned char *pbmrow,
+                          unsigned width, int black_is_high,
+                          float *cur, float *next, int left_to_right)
+{
+    unsigned i;
+
+    memset(next, 0, ((size_t)width + 2u) * sizeof(*next));
+
+    for (i = 0; i < width; i++) {
+        unsigned x = left_to_right ? i : width - 1u - i;
+        int v = black_is_high ? (int)rowbuf[x] : 255 - (int)rowbuf[x];
+        float acc = (float)v + cur[x + 1u];
+        float out = acc >= 128.0f ? 255.0f : 0.0f;
+        float e = acc - out;
+
+        if (out != 0.0f)
+            pbmrow[x >> 3] |= 0x80u >> (x & 7u);
+
+        if (left_to_right) {
+            cur [x + 2u] += e * (7.0f / 16.0f);
+            next[x      ] += e * (3.0f / 16.0f);
+            next[x + 1u ] += e * (5.0f / 16.0f);
+            next[x + 2u ] += e * (1.0f / 16.0f);
+        } else {
+            cur [x      ] += e * (7.0f / 16.0f);
+            next[x + 2u ] += e * (3.0f / 16.0f);
+            next[x + 1u ] += e * (5.0f / 16.0f);
+            next[x      ] += e * (1.0f / 16.0f);
+        }
+    }
+}
 
 /*
  * Convert one CUPS raster page into a PBM P4 image appended to `out`.
@@ -106,6 +157,8 @@ static int page_to_pbm(FILE *in, FILE *out, const unsigned char *hdr,
     unsigned row, x;
     unsigned char *rowbuf;
     unsigned char *pbmrow;
+    float *err_cur = NULL;      /* error-diffusion state, 8-bit raster only */
+    float *err_next = NULL;
     int black_is_high;          /* true => larger sample value is blacker */
 
     psz[0] = get_u32(hdr, OFF_PAGESIZE);
@@ -126,9 +179,14 @@ static int page_to_pbm(FILE *in, FILE *out, const unsigned char *hdr,
 
     rowbuf = malloc(bpl);
     pbmrow = malloc((width + 7) / 8);
-    if (!rowbuf || !pbmrow) {
+    if (bpp == 8) {
+        err_cur = calloc((size_t)width + 2u, sizeof(*err_cur));
+        err_next = calloc((size_t)width + 2u, sizeof(*err_next));
+    }
+    if (!rowbuf || !pbmrow || (bpp == 8 && (!err_cur || !err_next))) {
         fprintf(stderr, "ERROR: out of memory\n");
         free(rowbuf); free(pbmrow);
+        free(err_cur); free(err_next);
         return -1;
     }
 
@@ -141,6 +199,7 @@ static int page_to_pbm(FILE *in, FILE *out, const unsigned char *hdr,
                             "(row %u of %u, got %zu of %u)\n",
                     row, height, n, bpl);
             free(rowbuf); free(pbmrow);
+            free(err_cur); free(err_next);
             return -1;
         }
         memset(pbmrow, 0, (width + 7) / 8);
@@ -156,31 +215,31 @@ static int page_to_pbm(FILE *in, FILE *out, const unsigned char *hdr,
                     pbmrow[x >> 3] |= 0x80u >> (x & 7);
             }
         } else if (bpp == 8) {
-            for (x = 0; x < width; x++) {
-                unsigned v = rowbuf[x];
-                int threshold = black_is_high
-                    ? (BAYER[row & 7][x & 7] * 255) / 63
-                    : 255 - (BAYER[row & 7][x & 7] * 255) / 63;
-                int bit = black_is_high ? (int)v > threshold
-                                        : (int)v < threshold;
-                if (bit)
-                    pbmrow[x >> 3] |= 0x80u >> (x & 7);
-            }
+            /* Continuous-tone grey.  Halftone here instead of accepting
+             * cgpdftoraster's 64x64-tiled 1-bit mask - see dither_row_fs(). */
+            float *swap;
+            dither_row_fs(rowbuf, pbmrow, width, black_is_high,
+                          err_cur, err_next, (row & 1u) == 0);
+            swap = err_cur; err_cur = err_next; err_next = swap;
         } else {
             fprintf(stderr, "ERROR: unsupported %u bits/pixel (%u per colour)\n",
                     bpp, bpc);
             free(rowbuf); free(pbmrow);
+            free(err_cur); free(err_next);
             return -1;
         }
         if (fwrite(pbmrow, 1, (width + 7) / 8, out) != (width + 7) / 8) {
             fprintf(stderr, "ERROR: write failed\n");
             free(rowbuf); free(pbmrow);
+            free(err_cur); free(err_next);
             return -1;
         }
     }
 
     free(rowbuf);
     free(pbmrow);
+    free(err_cur);
+    free(err_next);
 
     if (pw) *pw = width;
     if (ph) *ph = height;
@@ -396,6 +455,28 @@ int main(int argc, char **argv)
         printer_copies = 1;
     } else {
         printer_copies = copies;
+    }
+
+    /*
+     * Optional diagnostic: dump the 1-bit page bitmap that is handed to the
+     * HBPL encoder, so the halftone can be inspected without a printer:
+     *
+     *   RASTERTOHBPL_PBM_DUMP=/tmp/page.pbm rastertohbpl 1 u t 1 "" in.ras
+     *
+     * (see README section 6).
+     */
+    {
+        const char *dump = getenv("RASTERTOHBPL_PBM_DUMP");
+        if (dump && *dump) {
+            FILE *dfp = fopen(dump, "wb");
+            if (!dfp)
+                perror(dump);
+            else {
+                if (copy_stream(tmp, dfp) != 0)
+                    perror("writing PBM dump");
+                fclose(dfp);
+            }
+        }
     }
 
     /* Hand the PBM to the HBPL encoder on stdin. */
