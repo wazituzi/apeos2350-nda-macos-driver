@@ -22,6 +22,10 @@ PORT="${PORT:-9100}"
 DEFAULT_IP="192.168.1.100"
 DEST="/Library/Printers/FUJIFILM/Apeos2350"
 PPD_SRC="$HERE/ppd/FUJIFILM-Apeos-2350-NDA-HBPL.ppd"
+# Where macOS looks for printer drivers.  The .pkg installs the same path; the
+# script has to keep it in sync too, otherwise "System Settings > Printers"
+# keeps offering the PPD from whatever version was installed first.
+PPD_DEST="/Library/Printers/PPDs/Contents/Resources/FUJIFILM Apeos 2350 NDA HBPL.ppd"
 
 CLEAN_LEGACY=0
 RUN_TEST=0
@@ -120,12 +124,18 @@ if ! cupstestppd "$TMPPPD" >/dev/null 2>&1; then
 fi
 echo "    PPD valid, filter = $DEST/rastertohbpl"
 
+say "Installing the PPD into /Library/Printers/PPDs"
+install -d -o root -g wheel -m 755 "/Library/Printers/PPDs/Contents/Resources"
+install -o root -g wheel -m 644 "$TMPPPD" "$PPD_DEST"
+ls -l "$PPD_DEST" | sed 's/^/    /'
+grep '^\*FileVersion' "$PPD_DEST" | sed 's/^/    /'
+
 if lpstat -p "$QUEUE" >/dev/null 2>&1; then
   say "Updating existing queue '$QUEUE'"
-  lpadmin -p "$QUEUE" -E -v "socket://$IP:$PORT" -P "$TMPPPD"
+  lpadmin -p "$QUEUE" -E -v "socket://$IP:$PORT" -P "$PPD_DEST"
 else
   say "Creating queue '$QUEUE'"
-  lpadmin -p "$QUEUE" -E -v "socket://$IP:$PORT" -P "$TMPPPD" \
+  lpadmin -p "$QUEUE" -E -v "socket://$IP:$PORT" -P "$PPD_DEST" \
           -D "FUJIFILM Apeos 2350 NDA (HBPL)" \
           -o printer-is-shared=false
 fi

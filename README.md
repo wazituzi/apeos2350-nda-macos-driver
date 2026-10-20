@@ -332,6 +332,24 @@ RASTERTOHBPL_PBM_DUMP=/tmp/x.pbm \
 `RASTERTOHBPL_PBM_DUMP` 只在手动排查时用；CUPS 正常调度时不会设置它。
 如果 raster 本身就是 1-bit（例如改用别的 PPD），滤镜会原样透传、不再加网。
 
+**macOS 里显示的"驱动程序版本"是什么**
+
+`系统设置 → 打印机与扫描仪` 里看到的驱动版本，来自**打印队列当前使用的 PPD** 的
+`*FileVersion`（`/etc/cups/ppd/<队列>.ppd`），不是 GitHub 上的 tag。
+所以升级后如果还显示旧版本号，说明队列 PPD 没被刷新——重新安装一次即可
+（`sudo ./install.sh` 或双击新版 `.pkg`；两者都会更新队列 PPD 和
+`/Library/Printers/PPDs/Contents/Resources/` 下的系统 PPD）。核对命令：
+
+```sh
+grep '^\*FileVersion' /etc/cups/ppd/Apeos_2350_HBPL.ppd
+grep '^\*FileVersion' "/Library/Printers/PPDs/Contents/Resources/FUJIFILM Apeos 2350 NDA HBPL.ppd"
+system_profiler SPPrintersDataType | grep -A3 "Apeos 2350 NDA"
+```
+
+> 历史注意：此前版本的 `install.sh` 不更新 `/Library/Printers/PPDs` 下的系统 PPD，
+> 那里可能残留旧版（1.0 / 1-bit）的 PPD；当前的 `install.sh` 会同步更新它，
+> `uninstall.sh` 也会删除它。如果该目录里还是旧 PPD，用当前脚本重装一次即可覆盖。
+
 **判断"是驱动坏了还是加网正常"**：打 `tools/diagnostic.pdf`，第 4 节是间距递减的
 棋盘格扫描；2px/4px 是灰块、8px 起能分辨，就是在正常工作。
 
